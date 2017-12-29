@@ -10,6 +10,7 @@
 #include <kern/console.h>
 #include <kern/monitor.h>
 #include <kern/kdebug.h>
+#include <kern/trap.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
 
@@ -55,34 +56,67 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
 	return 0;
 }
 
+unsigned int read_eip()
+{
+    unsigned int callerpc;
+    __asm __volatile("movl 4(%%ebp), %0" : "=r" (callerpc));
+    return callerpc;
+}
+
+#define J_NEXT_EBP(ebp) (*(unsigned int*)ebp)
+#define J_ARG_N(ebp, n) (*(unsigned int*)(ebp + n))
+
+extern unsigned int bootstacktop;
+static struct Eipdebuginfo info = {0};
+static inline unsigned int*
+dump_stack(unsigned int* p)
+{
+    unsigned int i = 0;
+
+    cprintf("ebp %08x eip %08x args", p, J_ARG_N(p, 1));
+    
+    for (i = 2; i < 7;i++)
+    {
+        cprintf(" %08x \n", J_ARG_N(p, i));
+    }
+    
+    return (unsigned int*)J_NEXT_EBP(p);
+}
+
+static inline unsigned int*
+dump_backstrace_symbols(unsigned int *p)
+{
+
+    cprintf("%s %d\n",info.eip_fn_name, info.eip_line);
+
+    debuginfo_eip((uintptr_t)*(p+1), &info);
+
+    return (unsigned int*)J_NEXT_EBP(p);
+}
+
+
 int
 mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 {
 	// Your code here.
-//    uint32_t m_ebp;
-//    //uint32_t *m_ebp = (uint32_t*)read_ebp();
-//    uint32_t m_eip;
- //   uint32_t *p_bp;
-//    m_ebp = read_ebp();
-//    while(m_ebp!=0)
-//    {
-//        p_bp = (uint32_t *)m_ebp;
-//        cprintf("ebp %08x eip %08x args %08x %08x %08x %08x %08x\n",m_ebp,*(p_bp+1),
- //       *(p_bp+2),*(p_bp+3),*(p_bp+4),*(p_bp+5),*(p_bp+6));
- //       struct Eipdebuginfo info;
-//        debuginfo_eip(*(p_bp+1),&info);
-//        cprintf("%s:%d %.*s+%d\n",info.eip_file,info.eip_line,info.eip_fn_namelen,info.eip_fn_name,*(p_bp+1)-info.eip_fn_addr);
-//        m_ebp = *p_bp;
-//    }
-//	return 0;
-	uint32_t *ebp = (uint32_t *)read_ebp();
-	while(ebp != 0){
-		cprintf("ebp %08x eip %08x args %08x %08x %08x %08x %08x\n",ebp,*(ebp+1),*(ebp+2),*(ebp+3),*(ebp+4),*(ebp+5),*(ebp+6));
-		struct Eipdebuginfo info;
-		debuginfo_eip(*(ebp+1),&info);
-		cprintf("%s:%d: %.*s+%d\n",info.eip_file,info.eip_line,info.eip_fn_namelen,info.eip_fn_name,*(ebp+1)-info.eip_fn_addr);
-		ebp = (uint32_t*)(*ebp);
-	}
+    unsigned int *p  = (unsigned int*) read_ebp();
+    unsigned int eip = read_eip();
+
+    cprintf("current eip=%08x", eip);
+    debuginfo_eip((uintptr_t) eip, &info);
+    cprintf("\n");
+    do
+    {
+        p = dump_stack(p);
+    }while(p);
+
+    cprintf("\n");
+    p = (unsigned int*)read_ebp();
+    do
+    {
+        p = dump_backstrace_symbols(p);
+    }while(p);
+
 	return 0;
 }
 
@@ -137,9 +171,12 @@ monitor(struct Trapframe *tf)
 {
 	char *buf;
 
+	//cprintf("Welcome to %Cc the JOS kernel monitor!\n", COLOR_GRN, 'H');
 	cprintf("Welcome to the JOS kernel monitor!\n");
 	cprintf("Type 'help' for a list of commands.\n");
 
+	if (tf != NULL)
+		print_trapframe(tf);
 
 	while (1) {
 		buf = readline("K> ");
